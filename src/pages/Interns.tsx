@@ -30,11 +30,117 @@ import { supabase } from "@/lib/supabase";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
 
+type DeadlineFormState = {
+  title: string;
+  date: string;
+  comment: string;
+  assigned_to: string;
+};
+
+type EmployeeOption = {
+  id: string;
+  first_name: string;
+  last_name: string;
+};
+
+type InternDeadline = {
+  id: string;
+  title: string;
+  deadline: string;
+  description: string;
+  employee?: {
+    first_name?: string;
+    last_name?: string;
+  };
+};
+
+type InternRecord = {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  lai_article: string;
+  rate: number;
+  echeances: InternDeadline[];
+};
+
+type RawEmployeeOption = Record<string, unknown>;
+type RawIntern = Record<string, unknown>;
+type RawDeadline = Record<string, unknown>;
+
+const emptyDeadlineForm: DeadlineFormState = {
+  title: "",
+  date: "",
+  comment: "",
+  assigned_to: "",
+};
+
+const toStringValue = (value: unknown): string => (typeof value === "string" ? value : "");
+
+const toStringId = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  return "";
+};
+
+const toNumberValue = (value: unknown): number => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const normalizeEmployeeOption = (employee: RawEmployeeOption): EmployeeOption => ({
+  id: toStringId(employee["id"]),
+  first_name: toStringValue(employee["first_name"] ?? employee["firstname"] ?? employee["firstName"]),
+  last_name: toStringValue(employee["last_name"] ?? employee["lastname"] ?? employee["lastName"]),
+});
+
+const normalizeInternDeadline = (deadline: RawDeadline): InternDeadline => {
+  const employeeRaw = deadline["employee"];
+  let employee: InternDeadline["employee"];
+
+  if (employeeRaw && typeof employeeRaw === "object") {
+    const record = employeeRaw as Record<string, unknown>;
+    const firstName = toStringValue(record["first_name"] ?? record["firstname"] ?? record["firstName"]);
+    const lastName = toStringValue(record["last_name"] ?? record["lastname"] ?? record["lastName"]);
+    if (firstName || lastName) {
+      employee = {
+        ...(firstName ? { first_name: firstName } : {}),
+        ...(lastName ? { last_name: lastName } : {}),
+      };
+    }
+  }
+
+  return {
+    id: toStringId(deadline["id"]),
+    title: toStringValue(deadline["title"]),
+    deadline: toStringValue(deadline["deadline"]),
+    description: toStringValue(deadline["description"]),
+    employee,
+  };
+};
+
+const normalizeIntern = (intern: RawIntern): InternRecord => {
+  const rawDeadlines = Array.isArray(intern["echeances"])
+    ? (intern["echeances"] as RawDeadline[])
+    : [];
+
+  return {
+    id: toStringId(intern["id"]),
+    first_name: toStringValue(intern["first_name"] ?? intern["firstname"] ?? intern["firstName"]),
+    last_name: toStringValue(intern["last_name"] ?? intern["lastname"] ?? intern["lastName"]),
+    email: toStringValue(intern["email"]),
+    lai_article: toStringValue(intern["lai_article"]),
+    rate: toNumberValue(intern["rate"]),
+    echeances: rawDeadlines.map((deadline) => normalizeInternDeadline(deadline)),
+  };
+};
+
 export default function Interns() {
-  const [interns, setInterns] = useState<any[]>([]);
+  const [interns, setInterns] = useState<InternRecord[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deadlineDialogOpen, setDeadlineDialogOpen] = useState<string | null>(null);
-  const [employees, setEmployees] = useState<any[]>([]);
+  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [form, setForm] = useState({
     first_name: "",
     last_name: "",
@@ -42,19 +148,27 @@ export default function Interns() {
     lai_article: "",
     rate: 0,
   });
-  const [deadlineForm, setDeadlineForm] = useState({ title: "", date: "", comment: "", assigned_to: "" });
+  const [deadlineForm, setDeadlineForm] = useState<DeadlineFormState>(emptyDeadlineForm);
 
   const fetchInterns = async () => {
     const { data, error } = await supabase
       .from("stagiaires")
       .select(`*, echeances(*, employee:employee_id(first_name, last_name))`);
-    if (error) toast.error("Erreur de chargement des stagiaires");
-    setInterns(data || []);
+    if (error) {
+      toast.error("Erreur de chargement des stagiaires");
+      return;
+    }
+    setInterns((data ?? []).map((intern) => normalizeIntern(intern as RawIntern)));
   };
 
   const fetchEmployees = async () => {
-    const { data } = await supabase.from("employees").select("id, first_name, last_name");
-    setEmployees(data || []);
+    const { data, error } = await supabase.from("employees").select("id, first_name, last_name");
+    if (error) {
+      console.error("Erreur de chargement des employés", error.message);
+      toast.error("Erreur de chargement des employés");
+      return;
+    }
+    setEmployees((data ?? []).map(normalizeEmployeeOption));
   };
 
   const handleCreate = async () => {
@@ -78,6 +192,8 @@ export default function Interns() {
 
     const { error } = await supabase.from("echeances").insert({
       mesure_id: null,
+      stagiaire_id,
+      employee_id: deadlineForm.assigned_to || null,
       title: deadlineForm.title,
       deadline: deadlineForm.date,
       description: deadlineForm.comment,
@@ -85,8 +201,9 @@ export default function Interns() {
     });
 
     if (error) return toast.error("Erreur lors de l'ajout de l'échéance");
+    toast.success("Échéance ajoutée");
     setDeadlineDialogOpen(null);
-    setDeadlineForm({ title: "", date: "", comment: "", assigned_to: "" });
+    setDeadlineForm(() => ({ ...emptyDeadlineForm }));
     fetchInterns();
   };
 
@@ -134,7 +251,10 @@ export default function Interns() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {interns.map((intern) => (
-          <Card key={intern.id} className="shadow-soft">
+          <Card
+            key={intern.id || `${intern.email}-${intern.first_name}-${intern.last_name}`}
+            className="shadow-soft"
+          >
             <CardHeader className="flex justify-between items-center">
               <div>
                 <CardTitle>{intern.first_name} {intern.last_name}</CardTitle>
@@ -145,15 +265,31 @@ export default function Interns() {
               <p><b>Article :</b> {intern.lai_article}</p>
               <p><b>Taux :</b> {intern.rate}%</p>
               <p className="mt-2 font-semibold">Échéances :</p>
-              {intern.echeances?.map((d: any) => (
-                <div key={d.id}>
-                  <p>📅 {d.title} – {d.deadline}</p>
-                  <p className="text-sm text-muted-foreground">{d.description} → {d.employee?.first_name} {d.employee?.last_name}</p>
+              {intern.echeances.map((deadline) => (
+                <div key={deadline.id || `${deadline.title}-${deadline.deadline}`}>
+                  <p>📅 {deadline.title || "Sans titre"} – {deadline.deadline || "Date à définir"}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {deadline.description}
+                    {deadline.employee ? (
+                      <>
+                        {deadline.description ? " → " : "Assigné à : "}
+                        {deadline.employee.first_name ?? ""} {deadline.employee.last_name ?? ""}
+                      </>
+                    ) : null}
+                  </p>
                 </div>
               ))}
               <Button variant="outline" size="sm" onClick={() => setDeadlineDialogOpen(intern.id)}>➕ Ajouter échéance</Button>
               {deadlineDialogOpen === intern.id && (
-                <Dialog open onOpenChange={() => setDeadlineDialogOpen(null)}>
+                <Dialog
+                  open
+                  onOpenChange={(open) => {
+                    if (!open) {
+                      setDeadlineDialogOpen(null);
+                      setDeadlineForm(() => ({ ...emptyDeadlineForm }));
+                    }
+                  }}
+                >
                   <DialogContent>
                     <DialogHeader>
                       <DialogTitle>Nouvelle échéance</DialogTitle>
@@ -163,6 +299,23 @@ export default function Interns() {
                     <Input value={deadlineForm.title} onChange={(e) => setDeadlineForm({ ...deadlineForm, title: e.target.value })} />
                     <Label>Date</Label>
                     <Input type="date" value={deadlineForm.date} onChange={(e) => setDeadlineForm({ ...deadlineForm, date: e.target.value })} />
+                    <Label>Responsable</Label>
+                    <Select
+                      value={deadlineForm.assigned_to || undefined}
+                      onValueChange={(val) => setDeadlineForm({ ...deadlineForm, assigned_to: val })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Choisir un responsable" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="">Non assigné</SelectItem>
+                        {employees.map((emp) => (
+                          <SelectItem key={emp.id} value={emp.id}>
+                            {`${emp.first_name} ${emp.last_name}`.trim()}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                     <Label>Commentaire</Label>
                     <Textarea value={deadlineForm.comment} onChange={(e) => setDeadlineForm({ ...deadlineForm, comment: e.target.value })} />
                     <Button onClick={() => addDeadline(intern.id)}>Enregistrer</Button>
